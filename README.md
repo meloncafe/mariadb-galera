@@ -111,12 +111,12 @@ The entrypoint automatically determines whether to bootstrap:
 │ devsaurus/mariadb-galera                        │
 ├─────────────────────────────────────────────────┤
 │ /opt/devsaurus/                                 │
-│   ├── bin/entrypoint.sh    (Galera automation) │
-│   ├── bin/healthcheck.sh   (Cluster health)    │
-│   └── lib/common.sh        (Shared functions)  │
+│   ├── bin/entrypoint.sh    (Galera automation)  │
+│   ├── bin/healthcheck.sh   (Cluster health)     │
+│   └── lib/common.sh        (Shared functions)   │
 ├─────────────────────────────────────────────────┤
 │ Official mariadb:xx image                       │
-│   └── /usr/local/bin/docker-entrypoint.sh      │
+│   └── /usr/local/bin/docker-entrypoint.sh       │
 └─────────────────────────────────────────────────┘
 ```
 

@@ -111,12 +111,12 @@ docker run -d --name galera-2 \
 │ devsaurus/mariadb-galera                        │
 ├─────────────────────────────────────────────────┤
 │ /opt/devsaurus/                                 │
-│   ├── bin/entrypoint.sh    (Galera 자동화)     │
-│   ├── bin/healthcheck.sh   (클러스터 헬스체크) │
-│   └── lib/common.sh        (공통 함수)         │
+│   ├── bin/entrypoint.sh    (Galera 자동화)        │
+│   ├── bin/healthcheck.sh   (클러스터 헬스체크)       │
+│   └── lib/common.sh        (공통 함수)            │
 ├─────────────────────────────────────────────────┤
-│ 공식 mariadb:xx 이미지                          │
-│   └── /usr/local/bin/docker-entrypoint.sh      │
+│ 공식 mariadb:xx 이미지                             │
+│   └── /usr/local/bin/docker-entrypoint.sh       │
 └─────────────────────────────────────────────────┘
 ```
 
