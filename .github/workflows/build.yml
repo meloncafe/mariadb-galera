@@ -316,7 +316,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   summary:
-    needs: [detect-versions, build]
+    needs: [ detect-versions, build ]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -369,17 +369,17 @@ jobs:
 
             if [[ "$STATUS" == "success" ]]; then
               STATUS_ICON="✅"
-              ((SUCCESS_COUNT++))
+              SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
             elif [[ "$STATUS" == "skipped" ]]; then
               STATUS_ICON="⏭️"
-              ((SKIPPED_COUNT++))
+              SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
               DIGEST="-"
               CVE_C="-"
               CVE_H="-"
               CVE_M="-"
             else
               STATUS_ICON="❌"
-              ((FAILED_COUNT++))
+              FAILED_COUNT=$((FAILED_COUNT + 1))
               DIGEST="-"
               CVE_C="-"
               CVE_H="-"
@@ -457,3 +457,4 @@ jobs:
           echo "- [GitHub Repository](https://github.com/${{ github.repository }})" >> $GITHUB_STEP_SUMMARY
           echo "- [MariaDB Official](https://hub.docker.com/_/mariadb)" >> $GITHUB_STEP_SUMMARY
           echo "- [Galera Documentation](https://galeracluster.com/library/documentation/)" >> $GITHUB_STEP_SUMMARY
+

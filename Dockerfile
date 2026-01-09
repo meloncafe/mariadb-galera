@@ -12,14 +12,14 @@ LABEL org.opencontainers.image.title="MariaDB Galera Cluster" \
       org.opencontainers.image.source="https://github.com/meloncafe/mariadb-galera" \
       org.opencontainers.image.licenses="MIT"
 
-# Install additional utilities for cluster management
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Update base packages to fix known vulnerabilities + install utilities
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
         netcat-openbsd \
         iproute2 \
         procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Devsaurus scripts
+# Copy devsaurus scripts
 COPY scripts/lib/ /opt/devsaurus/lib/
 COPY scripts/bin/ /opt/devsaurus/bin/
 
@@ -29,14 +29,13 @@ RUN chmod +x /opt/devsaurus/bin/*.sh
 ENV PATH="/opt/devsaurus/bin:$PATH"
 
 # Galera ports
-# 3306  - MySQL client connections
-# 4567  - Galera cluster replication (TCP + UDP)
-# 4568  - IST (Incremental State Transfer)
-# 4444  - SST (State Snapshot Transfer)
 EXPOSE 3306 4567 4567/udp 4568 4444
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD /opt/devsaurus/bin/healthcheck.sh
+
+# NOTE: No USER directive - container starts as root, then
+# official entrypoint uses 'gosu mysql' to switch to mysql user
 
 ENTRYPOINT ["/opt/devsaurus/bin/entrypoint.sh"]
 CMD ["mariadbd"]
