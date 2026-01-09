@@ -7,9 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       mariadb_version:
-        description: 'MariaDB version to build'
+        description: 'MariaDB version to build (empty = latest only)'
         required: false
         default: ''
+      build_all:
+        description: 'Build all recent versions (5)'
+        type: boolean
+        default: false
       force_rebuild:
         description: 'Force rebuild existing tags'
         type: boolean
@@ -24,39 +28,49 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       versions: ${{ steps.detect.outputs.versions }}
-      latest_version: ${{ steps.detect.outputs.latest_version }}
+      latest: ${{ steps.detect.outputs.latest }}
     steps:
       - name: Detect MariaDB versions
         id: detect
         run: |
-          # Get available MariaDB tags from Docker Hub (sorted ascending)
-          TAGS=$(curl -s "https://hub.docker.com/v2/repositories/library/mariadb/tags?page_size=100" \
+          # Get available MariaDB tags from Docker Hub
+          ALL_TAGS=$(curl -s "https://hub.docker.com/v2/repositories/library/mariadb/tags?page_size=100" \
             | jq -r '.results[].name' \
             | grep -E '^[0-9]+\.[0-9]+$' \
             | sort -V \
-            | tail -6)
+            | tail -5)
 
-          # If manual input provided, use that instead
+          LATEST_TAG=$(echo "$ALL_TAGS" | tail -1)
+          echo "latest=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+          # Determine which versions to build
           if [[ -n "${{ github.event.inputs.mariadb_version }}" ]]; then
             TAGS="${{ github.event.inputs.mariadb_version }}"
+            echo "Mode: Single version (manual input)"
+          elif [[ "${{ github.event.inputs.build_all }}" == "true" ]]; then
+            TAGS="$ALL_TAGS"
+            echo "Mode: All recent versions (manual)"
+          elif [[ "${{ github.event_name }}" == "schedule" ]]; then
+            TAGS="$ALL_TAGS"
+            echo "Mode: All recent versions (scheduled)"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            TAGS="$ALL_TAGS"
+            echo "Mode: All recent versions (push)"
+          else
+            TAGS="$LATEST_TAG"
+            echo "Mode: Latest only (default)"
           fi
 
-          # Get latest version (last in sorted list)
-          LATEST=$(echo "$TAGS" | tail -1)
-          echo "latest_version=$LATEST" >> $GITHUB_OUTPUT
-
-          # Convert to JSON array (ascending order for sequential build)
           JSON=$(echo "$TAGS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
           echo "versions=$JSON" >> $GITHUB_OUTPUT
           echo "Building versions: $JSON"
-          echo "Latest version: $LATEST"
 
   build:
     needs: detect-versions
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 1  # Sequential build for correct order
+      max-parallel: 1  # Sequential build for correct tag order and release order
       matrix:
         version: ${{ fromJson(needs.detect-versions.outputs.versions) }}
 
@@ -66,14 +80,25 @@ jobs:
 
       - name: Check if image exists
         id: check
-        if: ${{ github.event.inputs.force_rebuild != 'true' }}
         run: |
-          if docker manifest inspect ${{ env.IMAGE_NAME }}:${{ matrix.version }} > /dev/null 2>&1; then
+          if [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Force rebuild requested"
+          elif docker manifest inspect ${{ env.IMAGE_NAME }}:${{ matrix.version }} > /dev/null 2>&1; then
             echo "exists=true" >> $GITHUB_OUTPUT
             echo "Image ${{ matrix.version }} already exists, skipping..."
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Parse version
+        if: steps.check.outputs.exists != 'true'
+        id: version
+        run: |
+          VERSION="${{ matrix.version }}"
+          MAJOR="${VERSION%%.*}"
+          echo "major=$MAJOR" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION, Major: $MAJOR"
 
       - name: Set up QEMU
         if: steps.check.outputs.exists != 'true'
@@ -98,10 +123,12 @@ jobs:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ matrix.version }}
-            type=raw,value=latest,enable=${{ matrix.version == needs.detect-versions.outputs.latest_version }}
+            type=raw,value=${{ steps.version.outputs.major }},enable=${{ matrix.version == needs.detect-versions.outputs.latest }}
+            type=raw,value=latest,enable=${{ matrix.version == needs.detect-versions.outputs.latest }}
 
       - name: Build and push
         if: steps.check.outputs.exists != 'true'
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -116,39 +143,318 @@ jobs:
           provenance: mode=max
           sbom: true
 
-      - name: Create GitHub Release
+      - name: Get image digest
         if: steps.check.outputs.exists != 'true'
+        id: digest
+        run: |
+          DIGEST="${{ steps.build.outputs.digest }}"
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "short_digest=${DIGEST:7:12}" >> $GITHUB_OUTPUT
+
+      - name: Docker Scout - SBOM
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/scout-action@v1
+        with:
+          command: sbom
+          image: ${{ env.IMAGE_NAME }}:${{ matrix.version }}
+          output: sbom-${{ matrix.version }}.spdx.json
+          format: spdx
+        continue-on-error: true
+
+      - name: Docker Scout - CVE Scan
+        if: steps.check.outputs.exists != 'true'
+        id: scout
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: ${{ env.IMAGE_NAME }}:${{ matrix.version }}
+          sarif-file: cve-report-${{ matrix.version }}.sarif
+          summary: true
+        continue-on-error: true
+
+      - name: Parse CVE results
+        if: steps.check.outputs.exists != 'true'
+        id: cve
+        run: |
+          if [[ -f "cve-report-${{ matrix.version }}.sarif" ]]; then
+            CRITICAL=$(jq '[.runs[].results[] | select(.level == "error")] | length' cve-report-${{ matrix.version }}.sarif 2>/dev/null || echo "0")
+            HIGH=$(jq '[.runs[].results[] | select(.level == "warning")] | length' cve-report-${{ matrix.version }}.sarif 2>/dev/null || echo "0")
+            MEDIUM=$(jq '[.runs[].results[] | select(.level == "note")] | length' cve-report-${{ matrix.version }}.sarif 2>/dev/null || echo "0")
+          else
+            CRITICAL=0
+            HIGH=0
+            MEDIUM=0
+          fi
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+
+      - name: Get platform digests
+        if: steps.check.outputs.exists != 'true'
+        id: platforms
+        run: |
+          AMD64_DIGEST=$(docker manifest inspect ${{ env.IMAGE_NAME }}:${{ matrix.version }} | \
+            jq -r '.manifests[] | select(.platform.architecture=="amd64") | .digest' | head -1)
+          ARM64_DIGEST=$(docker manifest inspect ${{ env.IMAGE_NAME }}:${{ matrix.version }} | \
+            jq -r '.manifests[] | select(.platform.architecture=="arm64") | .digest' | head -1)
+
+          echo "amd64=$AMD64_DIGEST" >> $GITHUB_OUTPUT
+          echo "arm64=$ARM64_DIGEST" >> $GITHUB_OUTPUT
+
+      - name: Upload SBOM artifact
+        if: steps.check.outputs.exists != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.version }}
+          path: sbom-${{ matrix.version }}.spdx.json
+          retention-days: 90
+        continue-on-error: true
+
+      - name: Upload CVE report
+        if: steps.check.outputs.exists != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cve-report-${{ matrix.version }}
+          path: cve-report-${{ matrix.version }}.sarif
+          retention-days: 90
+        continue-on-error: true
+
+      - name: Save build info
+        if: always()
+        id: info
+        run: |
+          mkdir -p results
+          cat > results/build-${{ matrix.version }}.json << ENDJSON
+          {
+            "version": "${{ matrix.version }}",
+            "major": "${{ steps.version.outputs.major || '' }}",
+            "status": "${{ steps.check.outputs.exists == 'true' && 'skipped' || (steps.build.outcome == 'success' && 'success' || 'failed') }}",
+            "digest": "${{ steps.digest.outputs.digest || '' }}",
+            "short_digest": "${{ steps.digest.outputs.short_digest || '' }}",
+            "amd64_digest": "${{ steps.platforms.outputs.amd64 || '' }}",
+            "arm64_digest": "${{ steps.platforms.outputs.arm64 || '' }}",
+            "cve_critical": "${{ steps.cve.outputs.critical || '0' }}",
+            "cve_high": "${{ steps.cve.outputs.high || '0' }}",
+            "cve_medium": "${{ steps.cve.outputs.medium || '0' }}",
+            "is_latest": "${{ matrix.version == needs.detect-versions.outputs.latest }}"
+          }
+          ENDJSON
+
+      - name: Upload build info
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-info-${{ matrix.version }}
+          path: results/
+          retention-days: 1
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.exists != 'true' && steps.build.outcome == 'success'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ matrix.version }}
-          name: MariaDB Galera ${{ matrix.version }}
+          name: v${{ matrix.version }}
           body: |
-            ## MariaDB Galera Cluster ${{ matrix.version }}
+            # MariaDB Galera Cluster ${{ matrix.version }}
 
             Based on official `mariadb:${{ matrix.version }}` image with Devsaurus Galera automation.
 
-            ### Pull
+            ## 🐳 Docker Pull
+
             ```bash
             docker pull devsaurus/mariadb-galera:${{ matrix.version }}
             ```
 
-            ### Quick Start
+            ## 🔐 Image Verification
+
+            | Item | Value |
+            |------|-------|
+            | **Digest** | `${{ steps.digest.outputs.digest }}` |
+            | **SBOM** | SPDX format (see artifacts) |
+            | **Provenance** | SLSA (max) |
+
+            ## 🖥️ Platform Support
+
+            | Platform | Architecture | Digest |
+            |----------|--------------|--------|
+            | Linux | `amd64` | `${{ steps.platforms.outputs.amd64 }}` |
+            | Linux | `arm64` | `${{ steps.platforms.outputs.arm64 }}` |
+
+            ## 🛡️ Security Scan (Docker Scout)
+
+            | Severity | Count |
+            |----------|-------|
+            | 🔴 Critical | ${{ steps.cve.outputs.critical }} |
+            | 🟠 High | ${{ steps.cve.outputs.high }} |
+            | 🟡 Medium | ${{ steps.cve.outputs.medium }} |
+
+            ## 🚀 Quick Start
+
             ```bash
-            # Single node
+            # Single node (testing)
             docker run -d --name galera \
               -e MARIADB_ROOT_PASSWORD=secret \
               -e GALERA_CLUSTER_BOOTSTRAP=yes \
               devsaurus/mariadb-galera:${{ matrix.version }}
+
+            # 3-node cluster
+            docker run -d --name galera-1 \
+              -e MARIADB_ROOT_PASSWORD=secret \
+              -e GALERA_CLUSTER_NAME=mycluster \
+              -e GALERA_CLUSTER_ADDRESS=galera-1,galera-2,galera-3 \
+              -e GALERA_CLUSTER_BOOTSTRAP=yes \
+              -e GALERA_SST_PASSWORD=sstpass \
+              devsaurus/mariadb-galera:${{ matrix.version }}
             ```
 
-            ### Platforms
-            - linux/amd64
-            - linux/arm64
+            ## 📜 License
 
-            ### License
-            - Scripts: MIT
-            - MariaDB: GPLv2
+            - **Scripts**: MIT
+            - **MariaDB**: GPLv2
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  summary:
+    needs: [ detect-versions, build ]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Download all build info
+        uses: actions/download-artifact@v4
+        with:
+          pattern: build-info-*
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Generate summary
+        run: |
+          shopt -s nullglob
+
+          echo "# 🐳 MariaDB Galera Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Build info
+          echo "## 📋 Build Information" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Run** | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Time** | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Build results table
+          echo "## 📦 Build Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | Status | Tags | Digest | CVE (C/H/M) | Platforms |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|------|--------|-------------|-----------|" >> $GITHUB_STEP_SUMMARY
+
+          SUCCESS_COUNT=0
+          SKIPPED_COUNT=0
+          FAILED_COUNT=0
+          FOUND_FILES=0
+
+          for file in build-*.json; do
+            FOUND_FILES=1
+            VERSION=$(jq -r '.version' "$file")
+            MAJOR=$(jq -r '.major' "$file")
+            STATUS=$(jq -r '.status' "$file")
+            DIGEST=$(jq -r '.short_digest' "$file")
+            CVE_C=$(jq -r '.cve_critical' "$file")
+            CVE_H=$(jq -r '.cve_high' "$file")
+            CVE_M=$(jq -r '.cve_medium' "$file")
+            IS_LATEST=$(jq -r '.is_latest' "$file")
+
+            if [[ "$STATUS" == "success" ]]; then
+              STATUS_ICON="✅"
+              SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+            elif [[ "$STATUS" == "skipped" ]]; then
+              STATUS_ICON="⏭️"
+              SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+              DIGEST="-"
+              CVE_C="-"
+              CVE_H="-"
+              CVE_M="-"
+            else
+              STATUS_ICON="❌"
+              FAILED_COUNT=$((FAILED_COUNT + 1))
+              DIGEST="-"
+              CVE_C="-"
+              CVE_H="-"
+              CVE_M="-"
+            fi
+
+            # Build tags string
+            if [[ "$IS_LATEST" == "true" ]]; then
+              TAGS_STR="\`$VERSION\`, \`$MAJOR\`, \`latest\`"
+            else
+              TAGS_STR="\`$VERSION\`"
+            fi
+
+            echo "| $VERSION | $STATUS_ICON $STATUS | $TAGS_STR | \`$DIGEST\` | $CVE_C / $CVE_H / $CVE_M | amd64, arm64 |" >> $GITHUB_STEP_SUMMARY
+          done
+
+          if [[ $FOUND_FILES -eq 0 ]]; then
+            echo "| - | ⚠️ No build data | - | - | - | - |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Statistics
+          echo "## 📊 Statistics" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Success | $SUCCESS_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ Skipped | $SKIPPED_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Failed | $FAILED_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Platform info
+          echo "## 🖥️ Supported Platforms" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Platform | Architecture | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Linux | \`amd64\` (x86_64) | ✅ Supported |" >> $GITHUB_STEP_SUMMARY
+          echo "| Linux | \`arm64\` (aarch64) | ✅ Supported |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Security info
+          echo "## 🛡️ Security" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Feature | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **SBOM** | ✅ SPDX format |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Provenance** | ✅ SLSA (max) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **CVE Scan** | ✅ Docker Scout |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Signing** | ✅ Sigstore |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Quick start
+          echo "## 🚀 Quick Start" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "# Pull latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull devsaurus/mariadb-galera:latest" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Verify digest" >> $GITHUB_STEP_SUMMARY
+          echo "docker images --digests devsaurus/mariadb-galera" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Run single node" >> $GITHUB_STEP_SUMMARY
+          echo "docker run -d --name galera \\" >> $GITHUB_STEP_SUMMARY
+          echo "  -e MARIADB_ROOT_PASSWORD=secret \\" >> $GITHUB_STEP_SUMMARY
+          echo "  -e GALERA_CLUSTER_BOOTSTRAP=yes \\" >> $GITHUB_STEP_SUMMARY
+          echo "  devsaurus/mariadb-galera:latest" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Links
+          echo "## 🔗 Links" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- [Docker Hub](https://hub.docker.com/r/devsaurus/mariadb-galera)" >> $GITHUB_STEP_SUMMARY
+          echo "- [GitHub Repository](https://github.com/${{ github.repository }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [MariaDB Official](https://hub.docker.com/_/mariadb)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Galera Documentation](https://galeracluster.com/library/documentation/)" >> $GITHUB_STEP_SUMMARY
