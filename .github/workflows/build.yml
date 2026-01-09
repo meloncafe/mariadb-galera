@@ -1,0 +1,329 @@
+name: Build and Push MariaDB Galera
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 06:00 UTC
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'scripts/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+    inputs:
+      mariadb_version:
+        description: 'MariaDB version (e.g., 12.1.2) - leave empty for auto-detect'
+        required: false
+        default: ''
+      force_rebuild:
+        description: 'Force rebuild even if image exists'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: devsaurus/mariadb-galera
+
+jobs:
+  detect-versions:
+    name: Detect Available Versions
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.versions.outputs.versions }}
+      latest_version: ${{ steps.versions.outputs.latest }}
+    steps:
+      - name: Get MariaDB versions from archive
+        id: versions
+        run: |
+          echo "Fetching available MariaDB versions..."
+          
+          # Get list of MariaDB versions from archive (12.x only for now)
+          VERSIONS=$(curl -sL "https://archive.mariadb.org/" | \
+            grep -oP 'mariadb-\K12\.[0-9]+\.[0-9]+' | \
+            sort -Vu | \
+            tail -10)
+          
+          if [[ -z "$VERSIONS" ]]; then
+            echo "ERROR: Could not fetch MariaDB versions"
+            exit 1
+          fi
+          
+          echo "Found versions:"
+          echo "$VERSIONS"
+          
+          # If manual version specified, use only that
+          if [[ -n "${{ github.event.inputs.mariadb_version }}" ]]; then
+            VERSIONS="${{ github.event.inputs.mariadb_version }}"
+            echo "Using manual version: $VERSIONS"
+          fi
+          
+          # Convert to JSON array
+          VERSIONS_JSON=$(echo "$VERSIONS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          LATEST=$(echo "$VERSIONS" | tail -1)
+          
+          echo "versions=$VERSIONS_JSON" >> $GITHUB_OUTPUT
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "Versions to build: $VERSIONS_JSON"
+          echo "Latest: $LATEST"
+
+  check-galera:
+    name: Get Latest Galera Version
+    runs-on: ubuntu-latest
+    outputs:
+      galera_version: ${{ steps.galera.outputs.version }}
+    steps:
+      - name: Get latest Galera release
+        id: galera
+        run: |
+          GALERA_VERSION=$(curl -sL "https://api.github.com/repos/codership/galera/releases/latest" | \
+            jq -r '.tag_name' | sed 's/release_//')
+          
+          if [[ -z "$GALERA_VERSION" ]] || [[ "$GALERA_VERSION" == "null" ]]; then
+            # Fallback to known working version
+            GALERA_VERSION="26.4.21"
+          fi
+          
+          echo "version=$GALERA_VERSION" >> $GITHUB_OUTPUT
+          echo "Galera version: $GALERA_VERSION"
+
+  build:
+    name: Build v${{ matrix.version }}
+    needs: [detect-versions, check-galera]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.detect-versions.outputs.versions) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check if image exists
+        id: check
+        run: |
+          VERSION="${{ matrix.version }}"
+          IMAGE="${{ env.IMAGE_NAME }}:${VERSION}"
+          
+          echo "Checking if $IMAGE exists on Docker Hub..."
+          
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✓ Image exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "✗ Image not found - will build"
+          fi
+
+      - name: Check if source exists
+        if: steps.check.outputs.exists == 'false' || github.event.inputs.force_rebuild == 'true'
+        id: source-check
+        run: |
+          VERSION="${{ matrix.version }}"
+          URL="https://archive.mariadb.org/mariadb-${VERSION}/source/mariadb-${VERSION}.tar.gz"
+          
+          echo "Checking source availability: $URL"
+          
+          if curl -sIf "$URL" > /dev/null 2>&1; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✓ Source available"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "✗ Source not available - skipping"
+          fi
+
+      - name: Set up QEMU
+        if: (steps.check.outputs.exists == 'false' || github.event.inputs.force_rebuild == 'true') && steps.source-check.outputs.available == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: (steps.check.outputs.exists == 'false' || github.event.inputs.force_rebuild == 'true') && steps.source-check.outputs.available == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: (steps.check.outputs.exists == 'false' || github.event.inputs.force_rebuild == 'true') && steps.source-check.outputs.available == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Prepare tags
+        if: (steps.check.outputs.exists == 'false' || github.event.inputs.force_rebuild == 'true') && steps.source-check.outputs.available == 'true'
+        id: tags
+        run: |
+          VERSION="${{ matrix.version }}"
+          LATEST="${{ needs.detect-versions.outputs.latest_version }}"
+          MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1,2)
+          
+          TAGS="${{ env.IMAGE_NAME }}:${VERSION}"
+          TAGS="${TAGS},${{ env.IMAGE_NAME }}:${MAJOR_MINOR}"
+          
+          IS_LATEST="false"
+          if [[ "$VERSION" == "$LATEST" ]]; then
+            TAGS="${TAGS},${{ env.IMAGE_NAME }}:latest"
+            IS_LATEST="true"
+          fi
+          
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "is_latest=$IS_LATEST" >> $GITHUB_OUTPUT
+          echo "Tags: $TAGS"
+
+      - name: Build and push
+        if: (steps.check.outputs.exists == 'false' || github.event.inputs.force_rebuild == 'true') && steps.source-check.outputs.available == 'true'
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            MARIADB_VERSION=${{ matrix.version }}
+            GALERA_VERSION=${{ needs.check-galera.outputs.galera_version }}
+          labels: |
+            org.opencontainers.image.title=MariaDB Galera Cluster
+            org.opencontainers.image.description=MariaDB Galera built from source
+            org.opencontainers.image.version=${{ matrix.version }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT AND GPL-2.0-only
+          cache-from: type=gha,scope=mariadb-${{ matrix.version }}
+          cache-to: type=gha,mode=max,scope=mariadb-${{ matrix.version }}
+          sbom: true
+          provenance: mode=max
+
+      - name: Run security scan
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: ${{ env.IMAGE_NAME }}:${{ matrix.version }}
+          only-severities: critical,high
+          exit-code: false
+
+      - name: Create GitHub Release
+        if: steps.build.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ matrix.version }}"
+          GALERA_VER="${{ needs.check-galera.outputs.galera_version }}"
+          TAG="v${VERSION}"
+          IS_LATEST="${{ steps.tags.outputs.is_latest }}"
+          BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          DIGEST="${{ steps.build.outputs.digest }}"
+          
+          # Check if release exists
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG exists, updating..."
+            RELEASE_CMD="gh release edit $TAG"
+          else
+            echo "Creating new release $TAG..."
+            RELEASE_CMD="gh release create $TAG"
+          fi
+          
+          # Generate release notes
+          cat << EOF > release-notes.md
+          ## MariaDB Galera Cluster ${VERSION}
+          
+          ### 📦 Components
+          | Component | Version | License | Source |
+          |-----------|---------|---------|--------|
+          | MariaDB Server | ${VERSION} | GPLv2 | [archive.mariadb.org](https://archive.mariadb.org/mariadb-${VERSION}/source/) |
+          | Galera Provider | ${GALERA_VER} | GPLv2 | [github.com/codership/galera](https://github.com/codership/galera/releases/tag/release_${GALERA_VER}) |
+          
+          ### 🐳 Docker Pull
+          \`\`\`bash
+          docker pull ${{ env.IMAGE_NAME }}:${VERSION}
+          docker pull ${{ env.IMAGE_NAME }}:$(echo ${VERSION} | cut -d. -f1,2)
+          EOF
+          
+          if [[ "$IS_LATEST" == "true" ]]; then
+            echo "docker pull ${{ env.IMAGE_NAME }}:latest" >> release-notes.md
+          fi
+          
+          cat << EOF >> release-notes.md
+          \`\`\`
+          
+          ### 🏷️ Tags
+          - \`${VERSION}\` - Full version
+          - \`$(echo ${VERSION} | cut -d. -f1,2)\` - Major.Minor
+          EOF
+          
+          if [[ "$IS_LATEST" == "true" ]]; then
+            echo "- \`latest\` - Latest stable" >> release-notes.md
+          fi
+          
+          cat << EOF >> release-notes.md
+          
+          ### 🖥️ Platforms
+          - \`linux/amd64\`
+          - \`linux/arm64\`
+          
+          ### 📋 Image Details
+          - **Digest**: \`${DIGEST}\`
+          - **Build Date**: ${BUILD_DATE}
+          - **Base Image**: \`debian:bookworm-slim\`
+          
+          ### 🔒 Security
+          - SBOM attached (SPDX format)
+          - Provenance attached (SLSA)
+          - Built from official source code
+          
+          ### 🚀 Quick Start
+          \`\`\`bash
+          docker run -d --name galera \\
+            -e MARIADB_ROOT_PASSWORD=secret \\
+            -e GALERA_SST_PASSWORD=sst_secret \\
+            -e GALERA_CLUSTER_BOOTSTRAP=yes \\
+            -p 3306:3306 \\
+            ${{ env.IMAGE_NAME }}:${VERSION}
+          \`\`\`
+          
+          ### 📜 License
+          - **Scripts**: MIT License
+          - **Binaries**: GPLv2 (source links above)
+          EOF
+          
+          # Create or update release
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file release-notes.md
+          else
+            if [[ "$IS_LATEST" == "true" ]]; then
+              gh release create "$TAG" --title "MariaDB Galera ${VERSION}" --notes-file release-notes.md --latest
+            else
+              gh release create "$TAG" --title "MariaDB Galera ${VERSION}" --notes-file release-notes.md
+            fi
+          fi
+          
+          echo "✓ Release $TAG completed"
+
+  summary:
+    name: Build Summary
+    needs: [detect-versions, check-galera, build]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate Summary
+        run: |
+          echo "## 🐳 MariaDB Galera Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Versions Processed" >> $GITHUB_STEP_SUMMARY
+          echo '${{ needs.detect-versions.outputs.versions }}' | jq -r '.[]' | while read v; do
+            echo "- \`$v\`" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Latest Version" >> $GITHUB_STEP_SUMMARY
+          echo "\`${{ needs.detect-versions.outputs.latest_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Galera Version" >> $GITHUB_STEP_SUMMARY
+          echo "\`${{ needs.check-galera.outputs.galera_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Links" >> $GITHUB_STEP_SUMMARY
+          echo "- [Docker Hub](https://hub.docker.com/r/${{ env.IMAGE_NAME }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [Releases](https://github.com/${{ github.repository }}/releases)" >> $GITHUB_STEP_SUMMARY

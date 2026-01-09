@@ -1,0 +1,114 @@
+# MariaDB Galera Cluster - Docker Compose Example
+# SPDX-License-Identifier: MIT
+
+version: '3.8'
+
+services:
+  # Bootstrap node - start this first
+  galera-1:
+    image: devsaurus/mariadb-galera:latest
+    hostname: galera-1
+    container_name: galera-1
+    environment:
+      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD:-rootpassword}
+      - MARIADB_USER=${MARIADB_USER:-appuser}
+      - MARIADB_PASSWORD=${MARIADB_PASSWORD:-apppassword}
+      - MARIADB_DATABASE=${MARIADB_DATABASE:-myapp}
+      - GALERA_CLUSTER_NAME=my_galera_cluster
+      - GALERA_CLUSTER_ADDRESS=galera-1,galera-2,galera-3
+      - GALERA_CLUSTER_BOOTSTRAP=yes  # Only for first node, first start
+      - GALERA_NODE_NAME=galera-1
+      - GALERA_SST_PASSWORD=${GALERA_SST_PASSWORD:-sstpassword}
+    volumes:
+      - galera-1-data:/var/lib/mysql
+      - ./init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - galera-network
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["/usr/local/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  galera-2:
+    image: devsaurus/mariadb-galera:latest
+    hostname: galera-2
+    container_name: galera-2
+    environment:
+      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD:-rootpassword}
+      - GALERA_CLUSTER_NAME=my_galera_cluster
+      - GALERA_CLUSTER_ADDRESS=galera-1,galera-2,galera-3
+      - GALERA_NODE_NAME=galera-2
+      - GALERA_SST_PASSWORD=${GALERA_SST_PASSWORD:-sstpassword}
+    volumes:
+      - galera-2-data:/var/lib/mysql
+    networks:
+      - galera-network
+    depends_on:
+      galera-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["/usr/local/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  galera-3:
+    image: devsaurus/mariadb-galera:latest
+    hostname: galera-3
+    container_name: galera-3
+    environment:
+      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD:-rootpassword}
+      - GALERA_CLUSTER_NAME=my_galera_cluster
+      - GALERA_CLUSTER_ADDRESS=galera-1,galera-2,galera-3
+      - GALERA_NODE_NAME=galera-3
+      - GALERA_SST_PASSWORD=${GALERA_SST_PASSWORD:-sstpassword}
+    volumes:
+      - galera-3-data:/var/lib/mysql
+    networks:
+      - galera-network
+    depends_on:
+      galera-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["/usr/local/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # Optional: ProxySQL for load balancing
+  # proxysql:
+  #   image: proxysql/proxysql:latest
+  #   hostname: proxysql
+  #   container_name: proxysql
+  #   volumes:
+  #     - ./proxysql.cnf:/etc/proxysql.cnf:ro
+  #   networks:
+  #     - galera-network
+  #   ports:
+  #     - "6033:6033"  # MySQL protocol
+  #     - "6032:6032"  # Admin interface
+  #   depends_on:
+  #     - galera-1
+  #     - galera-2
+  #     - galera-3
+
+volumes:
+  galera-1-data:
+    driver: local
+  galera-2-data:
+    driver: local
+  galera-3-data:
+    driver: local
+
+networks:
+  galera-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
