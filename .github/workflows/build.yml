@@ -90,6 +90,15 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Parse version
+        if: steps.check.outputs.exists != 'true'
+        id: version
+        run: |
+          VERSION="${{ matrix.version }}"
+          MAJOR="${VERSION%%.*}"
+          echo "major=$MAJOR" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION, Major: $MAJOR"
+
       - name: Set up QEMU
         if: steps.check.outputs.exists != 'true'
         uses: docker/setup-qemu-action@v3
@@ -113,6 +122,7 @@ jobs:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ matrix.version }}
+            type=raw,value=${{ steps.version.outputs.major }},enable=${{ matrix.version == needs.detect-versions.outputs.latest }}
             type=raw,value=latest,enable=${{ matrix.version == needs.detect-versions.outputs.latest }}
 
       - name: Build and push
@@ -165,7 +175,6 @@ jobs:
         if: steps.check.outputs.exists != 'true'
         id: cve
         run: |
-          # Count CVEs by severity
           if [[ -f "cve-report-${{ matrix.version }}.sarif" ]]; then
             CRITICAL=$(jq '[.runs[].results[] | select(.level == "error")] | length' cve-report-${{ matrix.version }}.sarif 2>/dev/null || echo "0")
             HIGH=$(jq '[.runs[].results[] | select(.level == "warning")] | length' cve-report-${{ matrix.version }}.sarif 2>/dev/null || echo "0")
@@ -183,7 +192,6 @@ jobs:
         if: steps.check.outputs.exists != 'true'
         id: platforms
         run: |
-          # Get per-platform digests
           AMD64_DIGEST=$(docker manifest inspect ${{ env.IMAGE_NAME }}:${{ matrix.version }} | \
             jq -r '.manifests[] | select(.platform.architecture=="amd64") | .digest' | head -1)
           ARM64_DIGEST=$(docker manifest inspect ${{ env.IMAGE_NAME }}:${{ matrix.version }} | \
@@ -218,6 +226,7 @@ jobs:
           cat > results/build-${{ matrix.version }}.json << EOF
           {
             "version": "${{ matrix.version }}",
+            "major": "${{ steps.version.outputs.major || '' }}",
             "status": "${{ steps.check.outputs.exists == 'true' && 'skipped' || (steps.build.outcome == 'success' && 'success' || 'failed') }}",
             "digest": "${{ steps.digest.outputs.digest || '' }}",
             "short_digest": "${{ steps.digest.outputs.short_digest || '' }}",
@@ -243,19 +252,19 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ matrix.version }}
-          name: MariaDB Galera ${{ matrix.version }}
+          name: v${{ matrix.version }}
           body: |
-            ## MariaDB Galera Cluster ${{ matrix.version }}
+            # MariaDB Galera Cluster ${{ matrix.version }}
 
             Based on official `mariadb:${{ matrix.version }}` image with Devsaurus Galera automation.
 
-            ### 🐳 Docker Pull
+            ## 🐳 Docker Pull
 
             ```bash
             docker pull devsaurus/mariadb-galera:${{ matrix.version }}
             ```
 
-            ### 🔐 Image Verification
+            ## 🔐 Image Verification
 
             | Item | Value |
             |------|-------|
@@ -263,14 +272,14 @@ jobs:
             | **SBOM** | SPDX format (see artifacts) |
             | **Provenance** | SLSA (max) |
 
-            ### 🖥️ Platform Support
+            ## 🖥️ Platform Support
 
             | Platform | Architecture | Digest |
             |----------|--------------|--------|
             | Linux | `amd64` | `${{ steps.platforms.outputs.amd64 }}` |
             | Linux | `arm64` | `${{ steps.platforms.outputs.arm64 }}` |
 
-            ### 🛡️ Security Scan (Docker Scout)
+            ## 🛡️ Security Scan (Docker Scout)
 
             | Severity | Count |
             |----------|-------|
@@ -278,7 +287,7 @@ jobs:
             | 🟠 High | ${{ steps.cve.outputs.high }} |
             | 🟡 Medium | ${{ steps.cve.outputs.medium }} |
 
-            ### 🚀 Quick Start
+            ## 🚀 Quick Start
 
             ```bash
             # Single node (testing)
@@ -297,7 +306,7 @@ jobs:
               devsaurus/mariadb-galera:${{ matrix.version }}
             ```
 
-            ### 📜 License
+            ## 📜 License
 
             - **Scripts**: MIT
             - **MariaDB**: GPLv2
@@ -320,6 +329,8 @@ jobs:
 
       - name: Generate summary
         run: |
+          shopt -s nullglob
+
           echo "# 🐳 MariaDB Galera Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -337,51 +348,57 @@ jobs:
           # Build results table
           echo "## 📦 Build Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | Status | Digest | CVE (C/H/M) | Platforms |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|--------|--------|-------------|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | Status | Tags | Digest | CVE (C/H/M) | Platforms |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|------|--------|-------------|-----------|" >> $GITHUB_STEP_SUMMARY
 
           SUCCESS_COUNT=0
           SKIPPED_COUNT=0
           FAILED_COUNT=0
+          FOUND_FILES=0
 
-          # Process each build result
           for file in build-*.json; do
-            if [[ -f "$file" ]]; then
-              VERSION=$(jq -r '.version' "$file")
-              STATUS=$(jq -r '.status' "$file")
-              DIGEST=$(jq -r '.short_digest' "$file")
-              CVE_C=$(jq -r '.cve_critical' "$file")
-              CVE_H=$(jq -r '.cve_high' "$file")
-              CVE_M=$(jq -r '.cve_medium' "$file")
-              IS_LATEST=$(jq -r '.is_latest' "$file")
+            FOUND_FILES=1
+            VERSION=$(jq -r '.version' "$file")
+            MAJOR=$(jq -r '.major' "$file")
+            STATUS=$(jq -r '.status' "$file")
+            DIGEST=$(jq -r '.short_digest' "$file")
+            CVE_C=$(jq -r '.cve_critical' "$file")
+            CVE_H=$(jq -r '.cve_high' "$file")
+            CVE_M=$(jq -r '.cve_medium' "$file")
+            IS_LATEST=$(jq -r '.is_latest' "$file")
 
-              if [[ "$STATUS" == "success" ]]; then
-                STATUS_ICON="✅"
-                ((SUCCESS_COUNT++))
-              elif [[ "$STATUS" == "skipped" ]]; then
-                STATUS_ICON="⏭️"
-                ((SKIPPED_COUNT++))
-                DIGEST="-"
-                CVE_C="-"
-                CVE_H="-"
-                CVE_M="-"
-              else
-                STATUS_ICON="❌"
-                ((FAILED_COUNT++))
-                DIGEST="-"
-                CVE_C="-"
-                CVE_H="-"
-                CVE_M="-"
-              fi
-
-              VERSION_LABEL="$VERSION"
-              if [[ "$IS_LATEST" == "true" ]]; then
-                VERSION_LABEL="$VERSION (latest)"
-              fi
-
-              echo "| $VERSION_LABEL | $STATUS_ICON $STATUS | \`$DIGEST\` | $CVE_C / $CVE_H / $CVE_M | amd64, arm64 |" >> $GITHUB_STEP_SUMMARY
+            if [[ "$STATUS" == "success" ]]; then
+              STATUS_ICON="✅"
+              ((SUCCESS_COUNT++))
+            elif [[ "$STATUS" == "skipped" ]]; then
+              STATUS_ICON="⏭️"
+              ((SKIPPED_COUNT++))
+              DIGEST="-"
+              CVE_C="-"
+              CVE_H="-"
+              CVE_M="-"
+            else
+              STATUS_ICON="❌"
+              ((FAILED_COUNT++))
+              DIGEST="-"
+              CVE_C="-"
+              CVE_H="-"
+              CVE_M="-"
             fi
+
+            # Build tags string
+            if [[ "$IS_LATEST" == "true" ]]; then
+              TAGS_STR="\`$VERSION\`, \`$MAJOR\`, \`latest\`"
+            else
+              TAGS_STR="\`$VERSION\`"
+            fi
+
+            echo "| $VERSION | $STATUS_ICON $STATUS | $TAGS_STR | \`$DIGEST\` | $CVE_C / $CVE_H / $CVE_M | amd64, arm64 |" >> $GITHUB_STEP_SUMMARY
           done
+
+          if [[ $FOUND_FILES -eq 0 ]]; then
+            echo "| - | ⚠️ No build data | - | - | - | - |" >> $GITHUB_STEP_SUMMARY
+          fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
 
