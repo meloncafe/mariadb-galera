@@ -29,6 +29,7 @@ jobs:
     outputs:
       versions: ${{ steps.detect.outputs.versions }}
       latest: ${{ steps.detect.outputs.latest }}
+      major_latest: ${{ steps.detect.outputs.major_latest }}
     steps:
       - name: Detect MariaDB versions
         id: detect
@@ -38,7 +39,7 @@ jobs:
             | jq -r '.results[].name' \
             | grep -E '^[0-9]+\.[0-9]+$' \
             | sort -V \
-            | tail -5)
+            | tail -10)
 
           LATEST_TAG=$(echo "$ALL_TAGS" | tail -1)
           echo "latest=$LATEST_TAG" >> $GITHUB_OUTPUT
@@ -48,18 +49,41 @@ jobs:
             TAGS="${{ github.event.inputs.mariadb_version }}"
             echo "Mode: Single version (manual input)"
           elif [[ "${{ github.event.inputs.build_all }}" == "true" ]]; then
-            TAGS="$ALL_TAGS"
-            echo "Mode: All recent versions (manual)"
+            TAGS=$(echo "$ALL_TAGS" | tail -5)
+            echo "Mode: All recent versions (build_all)"
           elif [[ "${{ github.event_name }}" == "schedule" ]]; then
-            TAGS="$ALL_TAGS"
+            TAGS=$(echo "$ALL_TAGS" | tail -5)
             echo "Mode: All recent versions (scheduled)"
           elif [[ "${{ github.event_name }}" == "push" ]]; then
-            TAGS="$ALL_TAGS"
+            TAGS=$(echo "$ALL_TAGS" | tail -5)
             echo "Mode: All recent versions (push)"
           else
             TAGS="$LATEST_TAG"
             echo "Mode: Latest only (default)"
           fi
+
+          # Calculate latest version for each major
+          declare -A MAJOR_LATEST
+          for tag in $TAGS; do
+            major="${tag%%.*}"
+            MAJOR_LATEST[$major]="$tag"
+          done
+
+          # Convert to JSON: {"10": "10.6", "11": "11.4", "12": "12.1"}
+          MAJOR_JSON="{"
+          first=true
+          for major in "${!MAJOR_LATEST[@]}"; do
+            if [ "$first" = true ]; then
+              first=false
+            else
+              MAJOR_JSON+=","
+            fi
+            MAJOR_JSON+="\"$major\":\"${MAJOR_LATEST[$major]}\""
+          done
+          MAJOR_JSON+="}"
+
+          echo "major_latest=$MAJOR_JSON" >> $GITHUB_OUTPUT
+          echo "Major latest versions: $MAJOR_JSON"
 
           JSON=$(echo "$TAGS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
           echo "versions=$JSON" >> $GITHUB_OUTPUT
@@ -70,7 +94,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 1  # Sequential build for correct tag order and release order
+      max-parallel: 1
       matrix:
         version: ${{ fromJson(needs.detect-versions.outputs.versions) }}
 
@@ -78,64 +102,112 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check if image exists
-        id: check
-        run: |
-          if [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "Force rebuild requested"
-          elif docker manifest inspect ${{ env.IMAGE_NAME }}:${{ matrix.version }} > /dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Image ${{ matrix.version }} already exists, skipping..."
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Parse version
-        if: steps.check.outputs.exists != 'true'
         id: version
         run: |
           VERSION="${{ matrix.version }}"
           MAJOR="${VERSION%%.*}"
           echo "major=$MAJOR" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION, Major: $MAJOR"
+
+          # Check if this version is the latest for its major
+          MAJOR_LATEST='${{ needs.detect-versions.outputs.major_latest }}'
+          LATEST_FOR_MAJOR=$(echo "$MAJOR_LATEST" | jq -r ".[\"$MAJOR\"]")
+
+          if [[ "$VERSION" == "$LATEST_FOR_MAJOR" ]]; then
+            echo "is_major_latest=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_major_latest=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Check if this is the overall latest
+          if [[ "$VERSION" == "${{ needs.detect-versions.outputs.latest }}" ]]; then
+            echo "is_latest=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_latest=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "Version: $VERSION, Major: $MAJOR, Latest for major: $LATEST_FOR_MAJOR"
+
+      - name: Check existing resources
+        id: check
+        run: |
+          FORCE="${{ github.event.inputs.force_rebuild }}"
+
+          # Check image exists
+          if [[ "$FORCE" == "true" ]]; then
+            IMAGE_EXISTS="false"
+            echo "Force rebuild requested"
+          elif docker manifest inspect ${{ env.IMAGE_NAME }}:${{ matrix.version }} > /dev/null 2>&1; then
+            IMAGE_EXISTS="true"
+            echo "Image ${{ matrix.version }} already exists"
+          else
+            IMAGE_EXISTS="false"
+            echo "Image ${{ matrix.version }} not found, will build"
+          fi
+          echo "image_exists=$IMAGE_EXISTS" >> $GITHUB_OUTPUT
+
+          # Check release exists
+          RELEASE_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/v${{ matrix.version }}")
+
+          if [[ "$RELEASE_EXISTS" == "200" ]] && [[ "$FORCE" != "true" ]]; then
+            echo "release_exists=true" >> $GITHUB_OUTPUT
+            echo "Release v${{ matrix.version }} already exists"
+          else
+            echo "release_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Determine if we need to build
+          if [[ "$IMAGE_EXISTS" == "true" ]]; then
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Set up QEMU
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.needs_build == 'true'
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.needs_build == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.needs_build == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata
-        if: steps.check.outputs.exists != 'true'
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ matrix.version }}
-            type=raw,value=${{ steps.version.outputs.major }},enable=${{ matrix.version == needs.detect-versions.outputs.latest }}
-            type=raw,value=latest,enable=${{ matrix.version == needs.detect-versions.outputs.latest }}
+      - name: Build tags
+        if: steps.check.outputs.needs_build == 'true'
+        id: tags
+        run: |
+          TAGS="${{ env.IMAGE_NAME }}:${{ matrix.version }}"
+
+          # Add major tag if this is the latest for its major version
+          if [[ "${{ steps.version.outputs.is_major_latest }}" == "true" ]]; then
+            TAGS="$TAGS,${{ env.IMAGE_NAME }}:${{ steps.version.outputs.major }}"
+          fi
+
+          # Add latest tag if this is the overall latest
+          if [[ "${{ steps.version.outputs.is_latest }}" == "true" ]]; then
+            TAGS="$TAGS,${{ env.IMAGE_NAME }}:latest"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "Building with tags: $TAGS"
 
       - name: Build and push
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.needs_build == 'true'
         id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             MARIADB_VERSION=${{ matrix.version }}
           cache-from: type=gha
@@ -144,7 +216,7 @@ jobs:
           sbom: true
 
       - name: Get image digest
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.needs_build == 'true'
         id: digest
         run: |
           DIGEST="${{ steps.build.outputs.digest }}"
@@ -152,7 +224,7 @@ jobs:
           echo "short_digest=${DIGEST:7:12}" >> $GITHUB_OUTPUT
 
       - name: Docker Scout - SBOM
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.needs_build == 'true'
         uses: docker/scout-action@v1
         with:
           command: sbom
@@ -162,7 +234,7 @@ jobs:
         continue-on-error: true
 
       - name: Docker Scout - CVE Scan
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.needs_build == 'true'
         id: scout
         uses: docker/scout-action@v1
         with:
@@ -173,7 +245,7 @@ jobs:
         continue-on-error: true
 
       - name: Parse CVE results
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.needs_build == 'true'
         id: cve
         run: |
           if [[ -f "cve-report-${{ matrix.version }}.sarif" ]]; then
@@ -190,7 +262,7 @@ jobs:
           echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
 
       - name: Get platform digests
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.needs_build == 'true'
         id: platforms
         run: |
           AMD64_DIGEST=$(docker manifest inspect ${{ env.IMAGE_NAME }}:${{ matrix.version }} | \
@@ -202,7 +274,7 @@ jobs:
           echo "arm64=$ARM64_DIGEST" >> $GITHUB_OUTPUT
 
       - name: Upload SBOM artifact
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.needs_build == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: sbom-${{ matrix.version }}
@@ -211,7 +283,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload CVE report
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.needs_build == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: cve-report-${{ matrix.version }}
@@ -219,37 +291,52 @@ jobs:
           retention-days: 90
         continue-on-error: true
 
-      - name: Save build info
-        if: always()
+      - name: Prepare build info
         id: info
         run: |
-          mkdir -p results
-          cat > results/build-${{ matrix.version }}.json << ENDJSON
+          # Determine status
+          if [[ "${{ steps.check.outputs.needs_build }}" == "false" ]]; then
+            STATUS="skipped"
+          elif [[ -n "${{ steps.build.outputs.digest }}" ]]; then
+            STATUS="success"
+          else
+            STATUS="failed"
+          fi
+
+          # Build tags string
+          if [[ "${{ steps.version.outputs.is_latest }}" == "true" ]]; then
+            TAGS_STR="${{ matrix.version }}, ${{ steps.version.outputs.major }}, latest"
+          elif [[ "${{ steps.version.outputs.is_major_latest }}" == "true" ]]; then
+            TAGS_STR="${{ matrix.version }}, ${{ steps.version.outputs.major }}"
+          else
+            TAGS_STR="${{ matrix.version }}"
+          fi
+
+          cat > build-${{ matrix.version }}.json << EOF
           {
             "version": "${{ matrix.version }}",
-            "major": "${{ steps.version.outputs.major || '' }}",
-            "status": "${{ steps.check.outputs.exists == 'true' && 'skipped' || (steps.build.outcome == 'success' && 'success' || 'failed') }}",
-            "digest": "${{ steps.digest.outputs.digest || '' }}",
-            "short_digest": "${{ steps.digest.outputs.short_digest || '' }}",
-            "amd64_digest": "${{ steps.platforms.outputs.amd64 || '' }}",
-            "arm64_digest": "${{ steps.platforms.outputs.arm64 || '' }}",
-            "cve_critical": "${{ steps.cve.outputs.critical || '0' }}",
-            "cve_high": "${{ steps.cve.outputs.high || '0' }}",
-            "cve_medium": "${{ steps.cve.outputs.medium || '0' }}",
-            "is_latest": "${{ matrix.version == needs.detect-versions.outputs.latest }}"
+            "major": "${{ steps.version.outputs.major }}",
+            "status": "$STATUS",
+            "tags": "$TAGS_STR",
+            "digest": "${{ steps.build.outputs.digest }}",
+            "short_digest": "${{ steps.digest.outputs.short_digest }}",
+            "cve_critical": "${{ steps.cve.outputs.critical }}",
+            "cve_high": "${{ steps.cve.outputs.high }}",
+            "cve_medium": "${{ steps.cve.outputs.medium }}",
+            "is_latest": "${{ steps.version.outputs.is_latest }}",
+            "is_major_latest": "${{ steps.version.outputs.is_major_latest }}"
           }
-          ENDJSON
+          EOF
 
       - name: Upload build info
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-info-${{ matrix.version }}
-          path: results/
-          retention-days: 1
+          path: build-${{ matrix.version }}.json
+          retention-days: 7
 
       - name: Create GitHub Release
-        if: steps.check.outputs.exists != 'true' && steps.build.outcome == 'success'
+        if: steps.check.outputs.needs_build == 'true' && steps.check.outputs.release_exists == 'false'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ matrix.version }}
@@ -264,6 +351,14 @@ jobs:
             ```bash
             docker pull devsaurus/mariadb-galera:${{ matrix.version }}
             ```
+
+            ## 🏷️ Available Tags
+
+            | Tag | Description |
+            |-----|-------------|
+            | `${{ matrix.version }}` | This version |
+            ${{ steps.version.outputs.is_major_latest == 'true' && format('| `{0}` | Major version (latest {0}.x) |', steps.version.outputs.major) || '' }}
+            ${{ steps.version.outputs.is_latest == 'true' && '| `latest` | Latest stable |' || '' }}
 
             ## 🔐 Image Verification
 
@@ -349,8 +444,8 @@ jobs:
           # Build results table
           echo "## 📦 Build Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | Status | Tags | Digest | CVE (C/H/M) | Platforms |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|--------|------|--------|-------------|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | Status | Tags | Digest | CVE (C/H/M) |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|------|--------|-------------|" >> $GITHUB_STEP_SUMMARY
 
           SUCCESS_COUNT=0
           SKIPPED_COUNT=0
@@ -360,13 +455,12 @@ jobs:
           for file in build-*.json; do
             FOUND_FILES=1
             VERSION=$(jq -r '.version' "$file")
-            MAJOR=$(jq -r '.major' "$file")
             STATUS=$(jq -r '.status' "$file")
+            TAGS=$(jq -r '.tags' "$file")
             DIGEST=$(jq -r '.short_digest' "$file")
             CVE_C=$(jq -r '.cve_critical' "$file")
             CVE_H=$(jq -r '.cve_high' "$file")
             CVE_M=$(jq -r '.cve_medium' "$file")
-            IS_LATEST=$(jq -r '.is_latest' "$file")
 
             if [[ "$STATUS" == "success" ]]; then
               STATUS_ICON="✅"
@@ -387,18 +481,11 @@ jobs:
               CVE_M="-"
             fi
 
-            # Build tags string
-            if [[ "$IS_LATEST" == "true" ]]; then
-              TAGS_STR="\`$VERSION\`, \`$MAJOR\`, \`latest\`"
-            else
-              TAGS_STR="\`$VERSION\`"
-            fi
-
-            echo "| $VERSION | $STATUS_ICON $STATUS | $TAGS_STR | \`$DIGEST\` | $CVE_C / $CVE_H / $CVE_M | amd64, arm64 |" >> $GITHUB_STEP_SUMMARY
+            echo "| $VERSION | $STATUS_ICON $STATUS | \`$TAGS\` | \`$DIGEST\` | $CVE_C / $CVE_H / $CVE_M |" >> $GITHUB_STEP_SUMMARY
           done
 
           if [[ $FOUND_FILES -eq 0 ]]; then
-            echo "| - | ⚠️ No build data | - | - | - | - |" >> $GITHUB_STEP_SUMMARY
+            echo "| - | ⚠️ No build data | - | - | - |" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -408,8 +495,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Status | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| ✅ Success | $SUCCESS_COUNT |" >> $GITHUB_STEP_SUMMARY
-          echo "| ⏭️ Skipped | $SKIPPED_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Built | $SUCCESS_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ Skipped (exists) | $SKIPPED_COUNT |" >> $GITHUB_STEP_SUMMARY
           echo "| ❌ Failed | $FAILED_COUNT |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
