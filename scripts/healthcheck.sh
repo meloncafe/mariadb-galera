@@ -1,7 +1,7 @@
 #!/bin/bash
 # MariaDB Galera Health Check
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2026 devsaurus
+# Copyright (c) 2026 Devsaurus
 
 set -euo pipefail
 

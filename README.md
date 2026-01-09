@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker Pulls](https://img.shields.io/docker/pulls/devsaurus/mariadb-galera)](https://hub.docker.com/r/devsaurus/mariadb-galera)
 
-**[한국어 README](README.ko.md)**
+**[한국어](README.ko.md)**
 
 A **clean-room implementation** of MariaDB Galera Cluster Docker image, built entirely from source code.
 
@@ -138,7 +138,7 @@ docker-compose up -d galera-2 galera-3
 | Path | Description |
 |------|-------------|
 | `/var/lib/mysql` | Database data directory |
-| `/docker-entrypoint-initdb.d` | Initialization scripts (`.sh`, `.sql`) |
+| `/docker-entrypoint-initdb.d` | Initialization scripts (`.sh`, `.sql`, `.sql.gz`, `.sql.xz`, `.sql.zst`) |
 | `/etc/mysql/conf.d` | Custom configuration files |
 
 ## 🔌 Ports

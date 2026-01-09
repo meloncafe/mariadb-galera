@@ -1,6 +1,6 @@
 # MariaDB Galera Cluster - Built from Source
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2026 devsaurus
+# Copyright (c) 2026 Devsaurus
 #
 # This Dockerfile builds MariaDB and Galera from source.
 # The resulting binaries are licensed under GPLv2.
@@ -127,7 +127,7 @@ ARG GALERA_VERSION
 LABEL org.opencontainers.image.title="MariaDB Galera Cluster" \
       org.opencontainers.image.description="MariaDB Galera Cluster built from source - MIT licensed scripts" \
       org.opencontainers.image.version="${MARIADB_VERSION}" \
-      org.opencontainers.image.vendor="devsaurus" \
+      org.opencontainers.image.vendor="Devsaurus" \
       org.opencontainers.image.licenses="MIT AND GPL-2.0-only" \
       org.opencontainers.image.source="https://github.com/meloncafe/mariadb-galera"
 
@@ -152,6 +152,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 \
     procps \
     netcat-openbsd \
+    xz-utils \
+    zstd \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker Pulls](https://img.shields.io/docker/pulls/devsaurus/mariadb-galera)](https://hub.docker.com/r/devsaurus/mariadb-galera)
 
-**[English README](README.md)**
+**[English](README.md)**
 
 소스 코드에서 직접 빌드한 MariaDB Galera Cluster Docker 이미지입니다.
 
@@ -138,7 +138,7 @@ docker-compose up -d galera-2 galera-3
 | 경로 | 설명 |
 |------|------|
 | `/var/lib/mysql` | 데이터베이스 데이터 디렉토리 |
-| `/docker-entrypoint-initdb.d` | 초기화 스크립트 (`.sh`, `.sql`) |
+| `/docker-entrypoint-initdb.d` | 초기화 스크립트 (`.sh`, `.sql`, `.sql.gz`, `.sql.xz`, `.sql.zst`) |
 | `/etc/mysql/conf.d` | 사용자 정의 설정 파일 |
 
 ## 🔌 포트

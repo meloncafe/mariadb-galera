@@ -1,7 +1,7 @@
 # MariaDB Galera Cluster - Docker Compose Example
 # SPDX-License-Identifier: MIT
 
-version: '3.8'
+name: mariadb-galera-cluster
 
 services:
   # Bootstrap node - start this first
