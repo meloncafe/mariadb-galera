@@ -1,27 +1,21 @@
-# Build artifacts
-*.tar.gz
-*.deb
-*.rpm
+# OS
+.DS_Store
+Thumbs.db
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
 
 # Docker
-.docker/
+docker-compose.override.yml
 
-# Temp files
-tmp/
-temp/
-*.tmp
-*.log
+# Data
+data/
+*.sql
+!docker-entrypoint-initdb.d/*.sql
 
-# Test data
-test-data/
+# Secrets
+.env
+*.env.local

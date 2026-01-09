@@ -1,215 +1,133 @@
 # MariaDB Galera Cluster
 
-[![Build](https://github.com/meloncafe/mariadb-galera/actions/workflows/build.yml/badge.svg)](https://github.com/meloncafe/mariadb-galera/actions/workflows/build.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker Pulls](https://img.shields.io/docker/pulls/devsaurus/mariadb-galera)](https://hub.docker.com/r/devsaurus/mariadb-galera)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**[English](README.md)**
+공식 MariaDB 이미지에 Galera 클러스터 자동화 스크립트를 추가한 이미지입니다.
 
-소스 코드에서 직접 빌드한 MariaDB Galera Cluster Docker 이미지입니다.
+[English](README.md)
 
-## 🎯 프로젝트 특징
+## 개요
 
-- **100% 오픈소스**: 스크립트는 MIT 라이선스, 바이너리는 GPL 소스에서 빌드
-- **서드파티 바이너리 의존성 없음**: 모든 것을 공식 소스 코드에서 직접 컴파일
-- **투명한 빌드 프로세스**: Multi-stage Dockerfile, 완전히 감사 가능
-- **멀티 아키텍처 지원**: `linux/amd64` 및 `linux/arm64`
+공식 `mariadb` Docker 이미지를 확장하여 다음 기능을 제공합니다:
+- Galera 클러스터 자동 설정
+- 부트스트랩 감지 및 처리
+- SST 사용자 관리
+- 클러스터 상태 헬스체크
 
-## 📦 빠른 시작
+**소스 컴파일 없음** - 공식 MariaDB 바이너리를 사용하여 안정성과 빠른 빌드를 보장합니다.
 
-### 단일 노드 (개발용)
+## 빠른 시작
+
+### 단일 노드 (테스트용)
 
 ```bash
 docker run -d --name galera \
-  -e MARIADB_ROOT_PASSWORD=my_root_password \
-  -e GALERA_SST_PASSWORD=my_sst_password \
+  -e MARIADB_ROOT_PASSWORD=secret \
   -e GALERA_CLUSTER_BOOTSTRAP=yes \
-  -p 3306:3306 \
-  devsaurus/mariadb-galera:latest
+  devsaurus/mariadb-galera:11.4
 ```
 
 ### 3노드 클러스터
 
-**docker-compose.yml:**
-
-```yaml
-version: '3.8'
-
-services:
-  galera-1:
-    image: devsaurus/mariadb-galera:latest
-    environment:
-      - MARIADB_ROOT_PASSWORD=my_root_password
-      - GALERA_SST_PASSWORD=my_sst_password
-      - GALERA_CLUSTER_NAME=my_cluster
-      - GALERA_CLUSTER_ADDRESS=galera-1,galera-2,galera-3
-      - GALERA_CLUSTER_BOOTSTRAP=yes
-      - GALERA_NODE_NAME=galera-1
-    volumes:
-      - galera-1-data:/var/lib/mysql
-    networks:
-      - galera-net
-
-  galera-2:
-    image: devsaurus/mariadb-galera:latest
-    environment:
-      - MARIADB_ROOT_PASSWORD=my_root_password
-      - GALERA_SST_PASSWORD=my_sst_password
-      - GALERA_CLUSTER_NAME=my_cluster
-      - GALERA_CLUSTER_ADDRESS=galera-1,galera-2,galera-3
-      - GALERA_NODE_NAME=galera-2
-    volumes:
-      - galera-2-data:/var/lib/mysql
-    networks:
-      - galera-net
-    depends_on:
-      - galera-1
-
-  galera-3:
-    image: devsaurus/mariadb-galera:latest
-    environment:
-      - MARIADB_ROOT_PASSWORD=my_root_password
-      - GALERA_SST_PASSWORD=my_sst_password
-      - GALERA_CLUSTER_NAME=my_cluster
-      - GALERA_CLUSTER_ADDRESS=galera-1,galera-2,galera-3
-      - GALERA_NODE_NAME=galera-3
-    volumes:
-      - galera-3-data:/var/lib/mysql
-    networks:
-      - galera-net
-    depends_on:
-      - galera-1
-
-volumes:
-  galera-1-data:
-  galera-2-data:
-  galera-3-data:
-
-networks:
-  galera-net:
-    driver: bridge
-```
-
-**클러스터 시작:**
-
 ```bash
-# 부트스트랩 노드 먼저 시작
-docker-compose up -d galera-1
+# 1. 부트스트랩 노드 시작
+docker run -d --name galera-1 \
+  -e MARIADB_ROOT_PASSWORD=secret \
+  -e GALERA_CLUSTER_NAME=mycluster \
+  -e GALERA_CLUSTER_ADDRESS=galera-1,galera-2,galera-3 \
+  -e GALERA_CLUSTER_BOOTSTRAP=yes \
+  -e GALERA_SST_PASSWORD=sstpass \
+  devsaurus/mariadb-galera:11.4
 
-# 준비될 때까지 대기
-docker-compose exec galera-1 /usr/local/bin/healthcheck.sh
-
-# 나머지 노드 시작
-docker-compose up -d galera-2 galera-3
+# 2. 부트스트랩 완료 후 나머지 노드 시작
+docker run -d --name galera-2 \
+  -e MARIADB_ROOT_PASSWORD=secret \
+  -e GALERA_CLUSTER_NAME=mycluster \
+  -e GALERA_CLUSTER_ADDRESS=galera-1,galera-2,galera-3 \
+  -e GALERA_SST_PASSWORD=sstpass \
+  devsaurus/mariadb-galera:11.4
 ```
 
-## ⚙️ 환경 변수
+### Docker Compose
 
-### MariaDB 설정
+[docker-compose.yml](docker-compose.yml)에서 완전한 3노드 클러스터 예제를 확인하세요.
 
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| `MARIADB_ROOT_PASSWORD` | (필수) | Root 사용자 비밀번호 |
-| `MARIADB_ROOT_HOST` | `%` | Root 사용자 호스트 패턴 |
-| `MARIADB_USER` | | 애플리케이션 데이터베이스 사용자 |
-| `MARIADB_PASSWORD` | | 애플리케이션 사용자 비밀번호 |
-| `MARIADB_DATABASE` | | 애플리케이션 데이터베이스 이름 |
-| `MARIADB_PORT` | `3306` | MariaDB 포트 |
-| `MARIADB_BIND_ADDRESS` | `0.0.0.0` | 바인드 주소 |
-| `MARIADB_CHARACTER_SET` | `utf8mb4` | 기본 문자셋 |
-| `ALLOW_EMPTY_PASSWORD` | `no` | 빈 root 비밀번호 허용 |
+## 환경 변수
 
-### Galera 설정
+### MariaDB (공식)
 
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| `GALERA_CLUSTER_NAME` | `galera_cluster` | 클러스터 이름 |
-| `GALERA_CLUSTER_ADDRESS` | | 클러스터 노드 목록 (쉼표 구분) |
-| `GALERA_CLUSTER_BOOTSTRAP` | `no` | 새 클러스터 부트스트랩 (`yes`/`no`) |
-| `GALERA_NODE_NAME` | `$(hostname)` | 현재 노드 이름 |
-| `GALERA_NODE_ADDRESS` | 자동 감지 | 현재 노드 IP 주소 |
-| `GALERA_SST_METHOD` | `mariabackup` | SST 방식 (`mariabackup`/`rsync`/`mysqldump`) |
-| `GALERA_SST_USER` | `mariabackup` | SST 인증 사용자 |
-| `GALERA_SST_PASSWORD` | (클러스터 시 필수) | SST 인증 비밀번호 |
-| `GALERA_FORCE_BOOTSTRAP` | `no` | 강제 부트스트랩 (복구용) |
+| 변수 | 설명 | 기본값 |
+|------|------|--------|
+| `MARIADB_ROOT_PASSWORD` | Root 비밀번호 (필수) | - |
+| `MARIADB_DATABASE` | 시작 시 생성할 데이터베이스 | - |
+| `MARIADB_USER` | 시작 시 생성할 사용자 | - |
+| `MARIADB_PASSWORD` | MARIADB_USER 비밀번호 | - |
 
-## 📂 볼륨
+### Galera (Devsaurus)
 
-| 경로 | 설명 |
-|------|------|
-| `/var/lib/mysql` | 데이터베이스 데이터 디렉토리 |
-| `/docker-entrypoint-initdb.d` | 초기화 스크립트 (`.sh`, `.sql`, `.sql.gz`, `.sql.xz`, `.sql.zst`) |
-| `/etc/mysql/conf.d` | 사용자 정의 설정 파일 |
+| 변수 | 설명 | 기본값 |
+|------|------|--------|
+| `GALERA_CLUSTER_NAME` | 클러스터 이름 | `galera_cluster` |
+| `GALERA_CLUSTER_ADDRESS` | 노드 목록 (쉼표 구분) | - |
+| `GALERA_CLUSTER_BOOTSTRAP` | 새 클러스터 부트스트랩 | `no` |
+| `GALERA_NODE_NAME` | 이 노드의 이름 | `$(hostname)` |
+| `GALERA_NODE_ADDRESS` | 이 노드의 IP | 자동 감지 |
+| `GALERA_SST_METHOD` | SST 방식 | `mariabackup` |
+| `GALERA_SST_USER` | SST 사용자 | `mariabackup` |
+| `GALERA_SST_PASSWORD` | SST 비밀번호 | - |
+| `GALERA_FORCE_BOOTSTRAP` | 강제 부트스트랩 (복구용) | `no` |
 
-## 🔌 포트
+## 포트
 
 | 포트 | 프로토콜 | 설명 |
 |------|----------|------|
-| 3306 | TCP | MariaDB 클라이언트 연결 |
-| 4444 | TCP | SST (State Snapshot Transfer) |
-| 4567 | TCP/UDP | Galera 클러스터 복제 |
-| 4568 | TCP | IST (Incremental State Transfer) |
+| 3306 | TCP | MySQL 클라이언트 |
+| 4567 | TCP/UDP | Galera 복제 |
+| 4568 | TCP | IST (증분 상태 전송) |
+| 4444 | TCP | SST (상태 스냅샷 전송) |
 
-## 🏥 헬스 체크
+## 볼륨
 
-이미지에는 다음을 확인하는 내장 헬스 체크가 포함되어 있습니다:
+| 경로 | 설명 |
+|------|------|
+| `/var/lib/mysql` | 데이터베이스 데이터 |
+| `/docker-entrypoint-initdb.d` | 초기화 스크립트 (`.sh`, `.sql`, `.sql.gz`, `.sql.xz`, `.sql.zst`) |
 
-1. MariaDB 실행 중
-2. wsrep 준비됨 (`wsrep_ready = ON`)
-3. Primary 클러스터 상태 (`wsrep_cluster_status = Primary`)
-4. 노드 동기화됨 (`wsrep_local_state_comment = Synced`)
+## 부트스트랩 로직
 
-수동 확인:
+엔트리포인트가 자동으로 부트스트랩 여부를 결정합니다:
 
-```bash
-docker exec <container> /usr/local/bin/healthcheck.sh
+1. `GALERA_CLUSTER_BOOTSTRAP=yes` → 부트스트랩
+2. `GALERA_FORCE_BOOTSTRAP=yes` → 강제 부트스트랩 (복구)
+3. 데이터 없음 + 다른 노드 접근 불가 → 부트스트랩
+4. `safe_to_bootstrap: 1` + 다른 노드 없음 → 부트스트랩
+5. 그 외 → 기존 클러스터에 조인
+
+## 아키텍처
+
+```
+┌─────────────────────────────────────────────────┐
+│ devsaurus/mariadb-galera                        │
+├─────────────────────────────────────────────────┤
+│ /opt/devsaurus/                                 │
+│   ├── bin/entrypoint.sh    (Galera 자동화)     │
+│   ├── bin/healthcheck.sh   (클러스터 헬스체크) │
+│   └── lib/common.sh        (공통 함수)         │
+├─────────────────────────────────────────────────┤
+│ 공식 mariadb:xx 이미지                          │
+│   └── /usr/local/bin/docker-entrypoint.sh      │
+└─────────────────────────────────────────────────┘
 ```
 
-## 🔧 소스에서 빌드
+## 라이선스
 
-```bash
-git clone https://github.com/meloncafe/mariadb-galera.git
-cd mariadb-galera
+- **스크립트** (`/opt/devsaurus/`): MIT 라이선스
+- **MariaDB**: GPLv2 (공식 이미지)
 
-# 기본 버전으로 빌드
-docker build -t mariadb-galera .
+## 링크
 
-# 특정 버전으로 빌드
-docker build \
-  --build-arg MARIADB_VERSION=12.1.2 \
-  --build-arg GALERA_VERSION=26.4.21 \
-  -t mariadb-galera .
-```
-
-## 📜 라이선스
-
-### 스크립트 및 설정 (이 저장소)
-
-**MIT 라이선스** - [LICENSE](LICENSE) 참조
-
-스크립트 및 설정 파일을 자유롭게 사용, 수정, 배포할 수 있습니다.
-
-### 포함된 바이너리
-
-Docker 이미지에는 소스에서 빌드된 바이너리가 포함되어 있으며, 각각의 라이선스가 적용됩니다:
-
-| 컴포넌트 | 라이선스 | 소스 |
-|----------|----------|------|
-| MariaDB Server | GPLv2 | [MariaDB Archive](https://archive.mariadb.org/) |
-| Galera Provider | GPLv2 | [GitHub](https://github.com/codership/galera) |
-
-이 이미지나 파생물을 배포할 때는 GPL 요구사항(소스 코드 가용성)을 준수해야 합니다.
-
-## 🤝 기여
-
-기여를 환영합니다! 이슈와 풀 리퀘스트를 자유롭게 제출해 주세요.
-
-## 📚 참고 자료
-
-- [MariaDB Galera Cluster 문서](https://mariadb.com/kb/en/galera-cluster/)
-- [Galera Cluster 문서](https://galeracluster.com/library/documentation/)
-- [MariaDB 소스 빌드 가이드](https://mariadb.com/kb/en/compiling-mariadb-from-source/)
-
-## ⚠️ 면책 조항
-
-이 프로젝트는 MariaDB Corporation, Codership Oy 또는 그 계열사와 관련이 없습니다. MariaDB와 Galera는 각 소유자의 상표입니다.
+- [Docker Hub](https://hub.docker.com/r/devsaurus/mariadb-galera)
+- [GitHub](https://github.com/meloncafe/mariadb-galera)
+- [공식 MariaDB 이미지](https://hub.docker.com/_/mariadb)
+- [Galera 문서](https://galeracluster.com/library/documentation/)

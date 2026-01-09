@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 Devsaurus
+Copyright (c) 2025 Devsaurus
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -22,17 +22,16 @@ SOFTWARE.
 
 ---
 
-THIRD-PARTY LICENSES
+## Third-Party Licenses
 
-This Docker image contains software licensed under different terms:
+This Docker image includes software with the following licenses:
 
-1. MariaDB Server - GNU General Public License v2
-   Source: https://github.com/MariaDB/server
-   License: https://mariadb.com/kb/en/mariadb-license/
+### MariaDB Server
+- License: GPLv2
+- Source: https://mariadb.org/
+- The official MariaDB Docker image is used as the base.
 
-2. Galera Replication Library - GNU General Public License v2
-   Source: https://github.com/codership/galera
-   License: https://github.com/codership/galera/blob/4.x/LICENSE
-
-The scripts and configuration files in this repository (excluding the above
-GPL-licensed components) are licensed under the MIT License as stated above.
+### Galera Cluster
+- License: GPLv2
+- Source: https://galeracluster.com/
+- Included in the official MariaDB image.

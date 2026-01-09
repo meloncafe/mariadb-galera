@@ -1,114 +1,68 @@
-# MariaDB Galera Cluster - Docker Compose Example
-# SPDX-License-Identifier: MIT
+# MariaDB Galera Cluster - 3 Node Example
+# Usage:
+#   1. Start first node:  docker compose up -d galera-1
+#   2. Wait for ready:    docker compose logs -f galera-1
+#   3. Start others:      docker compose up -d galera-2 galera-3
 
-name: mariadb-galera-cluster
+x-galera-common: &galera-common
+  image: devsaurus/mariadb-galera:11.4
+  environment: &galera-env
+    MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-rootpass}
+    MARIADB_DATABASE: ${MARIADB_DATABASE:-myapp}
+    MARIADB_USER: ${MARIADB_USER:-myuser}
+    MARIADB_PASSWORD: ${MARIADB_PASSWORD:-mypass}
+    GALERA_CLUSTER_NAME: galera_cluster
+    GALERA_CLUSTER_ADDRESS: galera-1,galera-2,galera-3
+    GALERA_SST_METHOD: mariabackup
+    GALERA_SST_USER: mariabackup
+    GALERA_SST_PASSWORD: ${GALERA_SST_PASSWORD:-sstpass}
+  networks:
+    - galera-net
+  restart: unless-stopped
 
 services:
-  # Bootstrap node - start this first
   galera-1:
-    image: devsaurus/mariadb-galera:latest
-    hostname: galera-1
+    <<: *galera-common
     container_name: galera-1
+    hostname: galera-1
     environment:
-      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD:-rootpassword}
-      - MARIADB_USER=${MARIADB_USER:-appuser}
-      - MARIADB_PASSWORD=${MARIADB_PASSWORD:-apppassword}
-      - MARIADB_DATABASE=${MARIADB_DATABASE:-myapp}
-      - GALERA_CLUSTER_NAME=my_galera_cluster
-      - GALERA_CLUSTER_ADDRESS=galera-1,galera-2,galera-3
-      - GALERA_CLUSTER_BOOTSTRAP=yes  # Only for first node, first start
-      - GALERA_NODE_NAME=galera-1
-      - GALERA_SST_PASSWORD=${GALERA_SST_PASSWORD:-sstpassword}
-    volumes:
-      - galera-1-data:/var/lib/mysql
-      - ./init:/docker-entrypoint-initdb.d:ro
-    networks:
-      - galera-network
+      <<: *galera-env
+      GALERA_NODE_NAME: galera-1
+      GALERA_CLUSTER_BOOTSTRAP: "yes"  # First node bootstraps
     ports:
       - "3306:3306"
-    healthcheck:
-      test: ["/usr/local/bin/healthcheck.sh"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
+    volumes:
+      - galera-1-data:/var/lib/mysql
 
   galera-2:
-    image: devsaurus/mariadb-galera:latest
-    hostname: galera-2
+    <<: *galera-common
     container_name: galera-2
+    hostname: galera-2
     environment:
-      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD:-rootpassword}
-      - GALERA_CLUSTER_NAME=my_galera_cluster
-      - GALERA_CLUSTER_ADDRESS=galera-1,galera-2,galera-3
-      - GALERA_NODE_NAME=galera-2
-      - GALERA_SST_PASSWORD=${GALERA_SST_PASSWORD:-sstpassword}
+      <<: *galera-env
+      GALERA_NODE_NAME: galera-2
     volumes:
       - galera-2-data:/var/lib/mysql
-    networks:
-      - galera-network
     depends_on:
-      galera-1:
-        condition: service_healthy
-    healthcheck:
-      test: ["/usr/local/bin/healthcheck.sh"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 120s
+      - galera-1
 
   galera-3:
-    image: devsaurus/mariadb-galera:latest
-    hostname: galera-3
+    <<: *galera-common
     container_name: galera-3
+    hostname: galera-3
     environment:
-      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD:-rootpassword}
-      - GALERA_CLUSTER_NAME=my_galera_cluster
-      - GALERA_CLUSTER_ADDRESS=galera-1,galera-2,galera-3
-      - GALERA_NODE_NAME=galera-3
-      - GALERA_SST_PASSWORD=${GALERA_SST_PASSWORD:-sstpassword}
+      <<: *galera-env
+      GALERA_NODE_NAME: galera-3
     volumes:
       - galera-3-data:/var/lib/mysql
-    networks:
-      - galera-network
     depends_on:
-      galera-1:
-        condition: service_healthy
-    healthcheck:
-      test: ["/usr/local/bin/healthcheck.sh"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 120s
+      - galera-1
 
-  # Optional: ProxySQL for load balancing
-  # proxysql:
-  #   image: proxysql/proxysql:latest
-  #   hostname: proxysql
-  #   container_name: proxysql
-  #   volumes:
-  #     - ./proxysql.cnf:/etc/proxysql.cnf:ro
-  #   networks:
-  #     - galera-network
-  #   ports:
-  #     - "6033:6033"  # MySQL protocol
-  #     - "6032:6032"  # Admin interface
-  #   depends_on:
-  #     - galera-1
-  #     - galera-2
-  #     - galera-3
+networks:
+  galera-net:
+    driver: bridge
 
 volumes:
   galera-1-data:
-    driver: local
   galera-2-data:
-    driver: local
   galera-3-data:
-    driver: local
-
-networks:
-  galera-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
