@@ -17,24 +17,24 @@ MYSQL_PWD="${MARIADB_ROOT_PASSWORD:-${MYSQL_ROOT_PASSWORD:-}}"
 export MYSQL_PWD
 
 check_mysql_alive() {
-    mysqladmin ping -u root --silent 2>/dev/null
+    mariadb-admin ping -u root --silent 2>/dev/null
 }
 
 check_wsrep_ready() {
     local ready
-    ready=$(mysql -u root -N -e "SHOW STATUS LIKE 'wsrep_ready'" 2>/dev/null | awk '{print $2}')
+    ready=$(mariadb -u root -N -e "SHOW STATUS LIKE 'wsrep_ready'" 2>/dev/null | awk '{print $2}')
     [[ "$ready" == "ON" ]]
 }
 
 check_wsrep_cluster_status() {
     local status
-    status=$(mysql -u root -N -e "SHOW STATUS LIKE 'wsrep_cluster_status'" 2>/dev/null | awk '{print $2}')
+    status=$(mariadb -u root -N -e "SHOW STATUS LIKE 'wsrep_cluster_status'" 2>/dev/null | awk '{print $2}')
     [[ "$status" == "Primary" ]]
 }
 
 check_wsrep_local_state() {
     local state
-    state=$(mysql -u root -N -e "SHOW STATUS LIKE 'wsrep_local_state_comment'" 2>/dev/null | awk '{print $2}')
+    state=$(mariadb -u root -N -e "SHOW STATUS LIKE 'wsrep_local_state_comment'" 2>/dev/null | awk '{print $2}')
     [[ "$state" == "Synced" ]] || [[ "$state" == "Donor/Desynced" ]]
 }
 
