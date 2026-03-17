@@ -9,5 +9,27 @@
   ],
   "vulnerabilityAlerts": {
     "enabled": true
-  }
+  },
+  "automergeStrategy": "squash",
+  "packageRules": [
+    {
+      "description": "Minor/patch - automerge",
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Major updates - manual review",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "automerge": false,
+      "labels": [
+        "dependencies",
+        "major-update"
+      ]
+    }
+  ]
 }
