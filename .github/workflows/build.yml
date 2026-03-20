@@ -100,7 +100,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Parse version
         id: version
@@ -167,15 +167,15 @@ jobs:
 
       - name: Set up QEMU
         if: steps.check.outputs.needs_build == 'true'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         if: steps.check.outputs.needs_build == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to Docker Hub
         if: steps.check.outputs.needs_build == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -202,7 +202,7 @@ jobs:
       - name: Build and push
         if: steps.check.outputs.needs_build == 'true'
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -275,7 +275,7 @@ jobs:
 
       - name: Upload SBOM artifact
         if: steps.check.outputs.needs_build == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-${{ matrix.version }}
           path: sbom-${{ matrix.version }}.spdx.json
@@ -284,7 +284,7 @@ jobs:
 
       - name: Upload CVE report
         if: steps.check.outputs.needs_build == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cve-report-${{ matrix.version }}
           path: cve-report-${{ matrix.version }}.sarif
@@ -329,7 +329,7 @@ jobs:
           EOF
 
       - name: Upload build info
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-info-${{ matrix.version }}
           path: build-${{ matrix.version }}.json
@@ -337,7 +337,7 @@ jobs:
 
       - name: Create GitHub Release
         if: steps.check.outputs.needs_build == 'true' && steps.check.outputs.release_exists == 'false'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ matrix.version }}
           name: v${{ matrix.version }}
@@ -417,7 +417,7 @@ jobs:
     if: always()
     steps:
       - name: Download all build info
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: build-info-*
           merge-multiple: true
