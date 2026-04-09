@@ -25,7 +25,7 @@ env:
 
 jobs:
   detect-versions:
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    runs-on: [self-hosted, Linux, X64, hetzner-x64]
     outputs:
       versions: ${{ steps.detect.outputs.versions }}
       latest: ${{ steps.detect.outputs.latest }}
@@ -91,7 +91,7 @@ jobs:
 
   build:
     needs: detect-versions
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    runs-on: [self-hosted, Linux, X64, hetzner-x64]
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -413,7 +413,7 @@ jobs:
 
   summary:
     needs: [ detect-versions, build ]
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    runs-on: [self-hosted, Linux, X64, hetzner-x64]
     if: always()
     steps:
       - name: Download all build info
