@@ -335,7 +335,7 @@ jobs:
 
       - name: Create GitHub Release
         if: steps.check.outputs.needs_build == 'true' && steps.check.outputs.release_exists == 'false'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ matrix.version }}
           name: v${{ matrix.version }}
