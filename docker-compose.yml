@@ -5,7 +5,7 @@
 #   3. Start others:      docker compose up -d galera-2 galera-3
 
 x-galera-common: &galera-common
-  image: devsaurus/mariadb-galera:11.4
+  image: devsaurus/mariadb-galera:11.8
   environment: &galera-env
     MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-rootpass}
     MARIADB_DATABASE: ${MARIADB_DATABASE:-myapp}
