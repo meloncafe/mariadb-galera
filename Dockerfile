@@ -2,7 +2,7 @@
 # Based on official MariaDB image with devsaurus automation scripts
 # SPDX-License-Identifier: MIT
 
-ARG MARIADB_VERSION=11.4
+ARG MARIADB_VERSION=11.8
 
 FROM mariadb:${MARIADB_VERSION}
 
